@@ -1,5 +1,7 @@
 module github.com/dexidp/dex
 
+replace github.com/dexidp/dex => github.com/profects/dex v0.0.0-20191125091918-7becb0fb6e89
+
 require (
 	github.com/beevik/etree v0.0.0-20161216042344-4cd0dd976db8
 	github.com/beorn7/perks v0.0.0-20160229213445-3ac7bf7a47d1 // indirect
@@ -63,3 +65,5 @@ require (
 	gopkg.in/square/go-jose.v2 v2.1.8
 	gopkg.in/yaml.v2 v2.0.0-20160301204022-a83829b6f129 // indirect
 )
+
+go 1.13
