@@ -13,6 +13,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/dexidp/dex/connector"
+	"github.com/dexidp/dex/pkg/groups"
 	"github.com/dexidp/dex/pkg/log"
 )
 
@@ -31,6 +32,7 @@ type Config struct {
 	ClientSecret string   `json:"clientSecret"`
 	RedirectURI  string   `json:"redirectURI"`
 	Groups       []string `json:"groups"`
+	UseLoginAsID bool     `json:"useLoginAsID"`
 }
 
 type gitlabUser struct {
@@ -54,6 +56,7 @@ func (c *Config) Open(id string, logger log.Logger) (connector.Connector, error)
 		clientSecret: c.ClientSecret,
 		logger:       logger,
 		groups:       c.Groups,
+		useLoginAsID: c.UseLoginAsID,
 	}, nil
 }
 
@@ -75,11 +78,13 @@ type gitlabConnector struct {
 	clientSecret string
 	logger       log.Logger
 	httpClient   *http.Client
+	// if set to true will use the user's handle rather than their numeric id as the ID
+	useLoginAsID bool
 }
 
 func (c *gitlabConnector) oauth2Config(scopes connector.Scopes) *oauth2.Config {
 	gitlabScopes := []string{scopeUser}
-	if scopes.Groups {
+	if c.groupsRequired(scopes.Groups) {
 		gitlabScopes = []string{scopeUser, scopeOpenID}
 	}
 
@@ -142,13 +147,17 @@ func (c *gitlabConnector) HandleCallback(s connector.Scopes, r *http.Request) (i
 		username = user.Email
 	}
 	identity = connector.Identity{
-		UserID:        strconv.Itoa(user.ID),
-		Username:      username,
-		Email:         user.Email,
-		EmailVerified: true,
+		UserID:            strconv.Itoa(user.ID),
+		Username:          username,
+		PreferredUsername: user.Username,
+		Email:             user.Email,
+		EmailVerified:     true,
+	}
+	if c.useLoginAsID {
+		identity.UserID = user.Username
 	}
 
-	if s.Groups {
+	if c.groupsRequired(s.Groups) {
 		groups, err := c.getGroups(ctx, client, s.Groups, user.Username)
 		if err != nil {
 			return identity, fmt.Errorf("gitlab: get groups: %v", err)
@@ -189,9 +198,10 @@ func (c *gitlabConnector) Refresh(ctx context.Context, s connector.Scopes, ident
 		username = user.Email
 	}
 	ident.Username = username
+	ident.PreferredUsername = user.Username
 	ident.Email = user.Email
 
-	if s.Groups {
+	if c.groupsRequired(s.Groups) {
 		groups, err := c.getGroups(ctx, client, s.Groups, user.Username)
 		if err != nil {
 			return ident, fmt.Errorf("gitlab: get groups: %v", err)
@@ -199,6 +209,10 @@ func (c *gitlabConnector) Refresh(ctx context.Context, s connector.Scopes, ident
 		ident.Groups = groups
 	}
 	return ident, nil
+}
+
+func (c *gitlabConnector) groupsRequired(groupScope bool) bool {
+	return len(c.groups) > 0 || groupScope
 }
 
 // user queries the GitLab API for profile information using the provided client. The HTTP
@@ -273,7 +287,7 @@ func (c *gitlabConnector) getGroups(ctx context.Context, client *http.Client, gr
 	}
 
 	if len(c.groups) > 0 {
-		filteredGroups := filterGroups(gitlabGroups, c.groups)
+		filteredGroups := groups.Filter(gitlabGroups, c.groups)
 		if len(filteredGroups) == 0 {
 			return nil, fmt.Errorf("gitlab: user %q is not in any of the required groups", userLogin)
 		}
@@ -283,19 +297,4 @@ func (c *gitlabConnector) getGroups(ctx context.Context, client *http.Client, gr
 	}
 
 	return nil, nil
-}
-
-// Filter the users' group memberships by 'groups' from config.
-func filterGroups(userGroups, configGroups []string) []string {
-	groups := []string{}
-	groupFilter := make(map[string]struct{})
-	for _, group := range configGroups {
-		groupFilter[group] = struct{}{}
-	}
-	for _, group := range userGroups {
-		if _, ok := groupFilter[group]; ok {
-			groups = append(groups, group)
-		}
-	}
-	return groups
 }

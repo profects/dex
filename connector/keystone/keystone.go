@@ -150,7 +150,6 @@ func (p *conn) Prompt() string { return "username" }
 
 func (p *conn) Refresh(
 	ctx context.Context, scopes connector.Scopes, identity connector.Identity) (connector.Identity, error) {
-
 	token, err := p.getAdminToken(ctx)
 	if err != nil {
 		return identity, fmt.Errorf("keystone: failed to obtain admin token: %v", err)
@@ -210,6 +209,8 @@ func (p *conn) getAdminToken(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	defer resp.Body.Close()
+
 	token := resp.Header.Get("X-Subject-Token")
 	return token, nil
 }
@@ -229,6 +230,7 @@ func (p *conn) checkIfUserExists(ctx context.Context, userID string, token strin
 	if err != nil {
 		return false, err
 	}
+	defer resp.Body.Close()
 
 	if resp.StatusCode == 200 {
 		return true, nil
@@ -241,6 +243,9 @@ func (p *conn) getUserGroups(ctx context.Context, userID string, token string) (
 	// https://developer.openstack.org/api-ref/identity/v3/#list-groups-to-which-a-user-belongs
 	groupsURL := p.Host + "/v3/users/" + userID + "/groups"
 	req, err := http.NewRequest("GET", groupsURL, nil)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("X-Auth-Token", token)
 	req = req.WithContext(ctx)
 	resp, err := client.Do(req)

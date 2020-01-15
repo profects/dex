@@ -10,80 +10,6 @@ import (
 	"github.com/dexidp/dex/storage/kubernetes/k8sapi"
 )
 
-var tprMeta = k8sapi.TypeMeta{
-	APIVersion: "extensions/v1beta1",
-	Kind:       "ThirdPartyResource",
-}
-
-// The set of third party resources required by the storage. These are managed by
-// the storage so it can migrate itself by creating new resources.
-var thirdPartyResources = []k8sapi.ThirdPartyResource{
-	{
-		ObjectMeta: k8sapi.ObjectMeta{
-			Name: "auth-code.oidc.coreos.com",
-		},
-		TypeMeta:    tprMeta,
-		Description: "A code which can be claimed for an access token.",
-		Versions:    []k8sapi.APIVersion{{Name: "v1"}},
-	},
-	{
-		ObjectMeta: k8sapi.ObjectMeta{
-			Name: "auth-request.oidc.coreos.com",
-		},
-		TypeMeta:    tprMeta,
-		Description: "A request for an end user to authorize a client.",
-		Versions:    []k8sapi.APIVersion{{Name: "v1"}},
-	},
-	{
-		ObjectMeta: k8sapi.ObjectMeta{
-			Name: "o-auth2-client.oidc.coreos.com",
-		},
-		TypeMeta:    tprMeta,
-		Description: "An OpenID Connect client.",
-		Versions:    []k8sapi.APIVersion{{Name: "v1"}},
-	},
-	{
-		ObjectMeta: k8sapi.ObjectMeta{
-			Name: "signing-key.oidc.coreos.com",
-		},
-		TypeMeta:    tprMeta,
-		Description: "Keys used to sign and verify OpenID Connect tokens.",
-		Versions:    []k8sapi.APIVersion{{Name: "v1"}},
-	},
-	{
-		ObjectMeta: k8sapi.ObjectMeta{
-			Name: "refresh-token.oidc.coreos.com",
-		},
-		TypeMeta:    tprMeta,
-		Description: "Refresh tokens for clients to continuously act on behalf of an end user.",
-		Versions:    []k8sapi.APIVersion{{Name: "v1"}},
-	},
-	{
-		ObjectMeta: k8sapi.ObjectMeta{
-			Name: "password.oidc.coreos.com",
-		},
-		TypeMeta:    tprMeta,
-		Description: "Passwords managed by the OIDC server.",
-		Versions:    []k8sapi.APIVersion{{Name: "v1"}},
-	},
-	{
-		ObjectMeta: k8sapi.ObjectMeta{
-			Name: "offline-sessions.oidc.coreos.com",
-		},
-		TypeMeta:    tprMeta,
-		Description: "User sessions with an active refresh token.",
-		Versions:    []k8sapi.APIVersion{{Name: "v1"}},
-	},
-	{
-		ObjectMeta: k8sapi.ObjectMeta{
-			Name: "connector.oidc.coreos.com",
-		},
-		TypeMeta:    tprMeta,
-		Description: "Connectors available for login",
-		Versions:    []k8sapi.APIVersion{{Name: "v1"}},
-	},
-}
-
 var crdMeta = k8sapi.TypeMeta{
 	APIVersion: "apiextensions.k8s.io/v1beta1",
 	Kind:       "CustomResourceDefinition",
@@ -284,30 +210,33 @@ func toStorageClient(c Client) storage.Client {
 
 // Claims is a mirrored struct from storage with JSON struct tags.
 type Claims struct {
-	UserID        string   `json:"userID"`
-	Username      string   `json:"username"`
-	Email         string   `json:"email"`
-	EmailVerified bool     `json:"emailVerified"`
-	Groups        []string `json:"groups,omitempty"`
+	UserID            string   `json:"userID"`
+	Username          string   `json:"username"`
+	PreferredUsername string   `json:"preferredUsername"`
+	Email             string   `json:"email"`
+	EmailVerified     bool     `json:"emailVerified"`
+	Groups            []string `json:"groups,omitempty"`
 }
 
 func fromStorageClaims(i storage.Claims) Claims {
 	return Claims{
-		UserID:        i.UserID,
-		Username:      i.Username,
-		Email:         i.Email,
-		EmailVerified: i.EmailVerified,
-		Groups:        i.Groups,
+		UserID:            i.UserID,
+		Username:          i.Username,
+		PreferredUsername: i.PreferredUsername,
+		Email:             i.Email,
+		EmailVerified:     i.EmailVerified,
+		Groups:            i.Groups,
 	}
 }
 
 func toStorageClaims(i Claims) storage.Claims {
 	return storage.Claims{
-		UserID:        i.UserID,
-		Username:      i.Username,
-		Email:         i.Email,
-		EmailVerified: i.EmailVerified,
-		Groups:        i.Groups,
+		UserID:            i.UserID,
+		Username:          i.Username,
+		PreferredUsername: i.PreferredUsername,
+		Email:             i.Email,
+		EmailVerified:     i.EmailVerified,
+		Groups:            i.Groups,
 	}
 }
 
@@ -623,9 +552,10 @@ type OfflineSessions struct {
 	k8sapi.TypeMeta   `json:",inline"`
 	k8sapi.ObjectMeta `json:"metadata,omitempty"`
 
-	UserID  string                              `json:"userID,omitempty"`
-	ConnID  string                              `json:"connID,omitempty"`
-	Refresh map[string]*storage.RefreshTokenRef `json:"refresh,omitempty"`
+	UserID        string                              `json:"userID,omitempty"`
+	ConnID        string                              `json:"connID,omitempty"`
+	Refresh       map[string]*storage.RefreshTokenRef `json:"refresh,omitempty"`
+	ConnectorData []byte                              `json:"connectorData,omitempty"`
 }
 
 func (cli *client) fromStorageOfflineSessions(o storage.OfflineSessions) OfflineSessions {
@@ -638,17 +568,19 @@ func (cli *client) fromStorageOfflineSessions(o storage.OfflineSessions) Offline
 			Name:      cli.offlineTokenName(o.UserID, o.ConnID),
 			Namespace: cli.namespace,
 		},
-		UserID:  o.UserID,
-		ConnID:  o.ConnID,
-		Refresh: o.Refresh,
+		UserID:        o.UserID,
+		ConnID:        o.ConnID,
+		Refresh:       o.Refresh,
+		ConnectorData: o.ConnectorData,
 	}
 }
 
 func toStorageOfflineSessions(o OfflineSessions) storage.OfflineSessions {
 	s := storage.OfflineSessions{
-		UserID:  o.UserID,
-		ConnID:  o.ConnID,
-		Refresh: o.Refresh,
+		UserID:        o.UserID,
+		ConnID:        o.ConnID,
+		Refresh:       o.Refresh,
+		ConnectorData: o.ConnectorData,
 	}
 	if s.Refresh == nil {
 		// Server code assumes this will be non-nil.

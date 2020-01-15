@@ -21,6 +21,7 @@ import (
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/reflection"
 
 	"github.com/dexidp/dex/api"
 	"github.com/dexidp/dex/pkg/log"
@@ -71,28 +72,8 @@ func serve(cmd *cobra.Command, args []string) error {
 	if c.Logger.Level != "" {
 		logger.Infof("config using log level: %s", c.Logger.Level)
 	}
-
-	// Fast checks. Perform these first for a more responsive CLI.
-	checks := []struct {
-		bad    bool
-		errMsg string
-	}{
-		{c.Issuer == "", "no issuer specified in config file"},
-		{!c.EnablePasswordDB && len(c.StaticPasswords) != 0, "cannot specify static passwords without enabling password db"},
-		{c.Storage.Config == nil, "no storage supplied in config file"},
-		{c.Web.HTTP == "" && c.Web.HTTPS == "", "must supply a HTTP/HTTPS  address to listen on"},
-		{c.Web.HTTPS != "" && c.Web.TLSCert == "", "no cert specified for HTTPS"},
-		{c.Web.HTTPS != "" && c.Web.TLSKey == "", "no private key specified for HTTPS"},
-		{c.GRPC.TLSCert != "" && c.GRPC.Addr == "", "no address specified for gRPC"},
-		{c.GRPC.TLSKey != "" && c.GRPC.Addr == "", "no address specified for gRPC"},
-		{(c.GRPC.TLSCert == "") != (c.GRPC.TLSKey == ""), "must specific both a gRPC TLS cert and key"},
-		{c.GRPC.TLSCert == "" && c.GRPC.TLSClientCA != "", "cannot specify gRPC TLS client CA without a gRPC TLS cert"},
-	}
-
-	for _, check := range checks {
-		if check.bad {
-			return fmt.Errorf("invalid config: %s", check.errMsg)
-		}
+	if err := c.Validate(); err != nil {
+		return err
 	}
 
 	logger.Infof("config issuer: %s", c.Issuer)
@@ -103,7 +84,7 @@ func serve(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to register Go runtime metrics: %v", err)
 	}
 
-	err = prometheusRegistry.Register(prometheus.NewProcessCollector(os.Getpid(), ""))
+	err = prometheusRegistry.Register(prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}))
 	if err != nil {
 		return fmt.Errorf("failed to register process metrics: %v", err)
 	}
@@ -116,6 +97,17 @@ func serve(cmd *cobra.Command, args []string) error {
 
 	var grpcOptions []grpc.ServerOption
 
+	allowedTLSCiphers := []uint16{
+		tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+		tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305,
+		tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305,
+		tls.TLS_RSA_WITH_AES_128_GCM_SHA256,
+		tls.TLS_RSA_WITH_AES_256_GCM_SHA384,
+	}
+
 	if c.GRPC.TLSCert != "" {
 		// Parse certificates from certificate file and key file for server.
 		cert, err := tls.LoadX509KeyPair(c.GRPC.TLSCert, c.GRPC.TLSKey)
@@ -126,6 +118,7 @@ func serve(cmd *cobra.Command, args []string) error {
 		tlsConfig := tls.Config{
 			Certificates:             []tls.Certificate{cert},
 			MinVersion:               tls.VersionTLS12,
+			CipherSuites:             allowedTLSCiphers,
 			PreferServerCipherSuites: true,
 		}
 
@@ -136,7 +129,7 @@ func serve(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("invalid config: reading from client CA file: %v", err)
 			}
-			if cPool.AppendCertsFromPEM(clientCert) != true {
+			if !cPool.AppendCertsFromPEM(clientCert) {
 				return errors.New("invalid config: failed to parse client CA")
 			}
 
@@ -189,7 +182,6 @@ func serve(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to initialize storage connectors: %v", err)
 		}
 		storageConnectors[i] = conn
-
 	}
 
 	if c.EnablePasswordDB {
@@ -219,6 +211,7 @@ func serve(cmd *cobra.Command, args []string) error {
 	serverConfig := server.Config{
 		SupportedResponseTypes: c.OAuth2.ResponseTypes,
 		SkipApprovalScreen:     c.OAuth2.SkipApprovalScreen,
+		AlwaysShowLoginScreen:  c.OAuth2.AlwaysShowLoginScreen,
 		AllowedOrigins:         c.Web.AllowedOrigins,
 		Issuer:                 c.Issuer,
 		Storage:                s,
@@ -280,6 +273,7 @@ func serve(cmd *cobra.Command, args []string) error {
 			Addr:    c.Web.HTTPS,
 			Handler: serv,
 			TLSConfig: &tls.Config{
+				CipherSuites:             allowedTLSCiphers,
 				PreferServerCipherSuites: true,
 				MinVersion:               tls.VersionTLS12,
 			},
@@ -302,6 +296,10 @@ func serve(cmd *cobra.Command, args []string) error {
 				s := grpc.NewServer(grpcOptions...)
 				api.RegisterDexServer(s, server.NewAPI(serverConfig.Storage, logger))
 				grpcMetrics.InitializeMetrics(s)
+				if c.GRPC.Reflection {
+					logger.Info("enabling reflection in grpc service")
+					reflection.Register(s)
+				}
 				err = s.Serve(list)
 				return fmt.Errorf("listening on %s failed: %v", c.GRPC.Addr, err)
 			}()

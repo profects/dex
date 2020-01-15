@@ -1,14 +1,11 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
 	"golang.org/x/crypto/bcrypt"
-
-	// go-grpc doesn't use the standard library's context.
-	// https://github.com/grpc/grpc-go/issues/711
-	"golang.org/x/net/context"
 
 	"github.com/dexidp/dex/api"
 	"github.com/dexidp/dex/pkg/log"
@@ -226,7 +223,6 @@ func (d dexAPI) DeletePassword(ctx context.Context, req *api.DeletePasswordReq) 
 		return nil, fmt.Errorf("delete password: %v", err)
 	}
 	return &api.DeletePasswordResp{}, nil
-
 }
 
 func (d dexAPI) GetVersion(ctx context.Context, req *api.VersionReq) (*api.VersionResp, error) {
@@ -256,7 +252,37 @@ func (d dexAPI) ListPasswords(ctx context.Context, req *api.ListPasswordReq) (*a
 	return &api.ListPasswordResp{
 		Passwords: passwords,
 	}, nil
+}
 
+func (d dexAPI) VerifyPassword(ctx context.Context, req *api.VerifyPasswordReq) (*api.VerifyPasswordResp, error) {
+	if req.Email == "" {
+		return nil, errors.New("no email supplied")
+	}
+
+	if req.Password == "" {
+		return nil, errors.New("no password to verify supplied")
+	}
+
+	password, err := d.s.GetPassword(req.Email)
+	if err != nil {
+		if err == storage.ErrNotFound {
+			return &api.VerifyPasswordResp{
+				NotFound: true,
+			}, nil
+		}
+		d.logger.Errorf("api: there was an error retrieving the password: %v", err)
+		return nil, fmt.Errorf("verify password: %v", err)
+	}
+
+	if err := bcrypt.CompareHashAndPassword(password.Hash, []byte(req.Password)); err != nil {
+		d.logger.Infof("api: password check failed: %v", err)
+		return &api.VerifyPasswordResp{
+			Verified: false,
+		}, nil
+	}
+	return &api.VerifyPasswordResp{
+		Verified: true,
+	}, nil
 }
 
 func (d dexAPI) ListRefresh(ctx context.Context, req *api.ListRefreshReq) (*api.ListRefreshResp, error) {

@@ -8,12 +8,54 @@ import (
 
 	"github.com/dexidp/dex/connector/mock"
 	"github.com/dexidp/dex/connector/oidc"
+	"github.com/dexidp/dex/server"
 	"github.com/dexidp/dex/storage"
 	"github.com/dexidp/dex/storage/sql"
 )
 
 var _ = yaml.YAMLToJSON
 
+func TestValidConfiguration(t *testing.T) {
+	configuration := Config{
+		Issuer: "http://127.0.0.1:5556/dex",
+		Storage: Storage{
+			Type: "sqlite3",
+			Config: &sql.SQLite3{
+				File: "examples/dex.db",
+			},
+		},
+		Web: Web{
+			HTTP: "127.0.0.1:5556",
+		},
+		StaticConnectors: []Connector{
+			{
+				Type:   "mockCallback",
+				ID:     "mock",
+				Name:   "Example",
+				Config: &mock.CallbackConfig{},
+			},
+		},
+	}
+	if err := configuration.Validate(); err != nil {
+		t.Fatalf("this configuration should have been valid: %v", err)
+	}
+}
+
+func TestInvalidConfiguration(t *testing.T) {
+	configuration := Config{}
+	err := configuration.Validate()
+	if err == nil {
+		t.Fatal("this configuration should be invalid")
+	}
+	got := err.Error()
+	wanted := `invalid Config:
+	-	no issuer specified in config file
+	-	no storage supplied in config file
+	-	must supply a HTTP/HTTPS  address to listen on`
+	if got != wanted {
+		t.Fatalf("Expected error message to be %q, got %q", wanted, got)
+	}
+}
 func TestUnmarshalConfig(t *testing.T) {
 	rawConfig := []byte(`
 issuer: http://127.0.0.1:5556/dex
@@ -28,12 +70,21 @@ storage:
     connectionTimeout: 3
 web:
   http: 127.0.0.1:5556
+
+frontend:
+  dir: ./web
+  extra:
+    foo: bar
+
 staticClients:
 - id: example-app
   redirectURIs:
   - 'http://127.0.0.1:5555/callback'
   name: 'Example App'
   secret: ZXhhbXBsZS1hcHAtc2VjcmV0
+
+oauth2:
+  alwaysShowLoginScreen: true
 
 connectors:
 - type: mockCallback
@@ -76,16 +127,24 @@ logger:
 		Storage: Storage{
 			Type: "postgres",
 			Config: &sql.Postgres{
-				Host:              "10.0.0.1",
-				Port:              65432,
-				MaxOpenConns:      5,
-				MaxIdleConns:      3,
-				ConnMaxLifetime:   30,
-				ConnectionTimeout: 3,
+				NetworkDB: sql.NetworkDB{
+					Host:              "10.0.0.1",
+					Port:              65432,
+					MaxOpenConns:      5,
+					MaxIdleConns:      3,
+					ConnMaxLifetime:   30,
+					ConnectionTimeout: 3,
+				},
 			},
 		},
 		Web: Web{
 			HTTP: "127.0.0.1:5556",
+		},
+		Frontend: server.WebConfig{
+			Dir: "./web",
+			Extra: map[string]string{
+				"foo": "bar",
+			},
 		},
 		StaticClients: []storage.Client{
 			{
@@ -96,6 +155,9 @@ logger:
 					"http://127.0.0.1:5555/callback",
 				},
 			},
+		},
+		OAuth2: OAuth2{
+			AlwaysShowLoginScreen: true,
 		},
 		StaticConnectors: []Connector{
 			{
@@ -149,5 +211,4 @@ logger:
 	if diff := pretty.Compare(c, want); diff != "" {
 		t.Errorf("got!=want: %s", diff)
 	}
-
 }

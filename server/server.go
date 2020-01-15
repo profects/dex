@@ -14,6 +14,10 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/felixge/httpsnoop"
+	"github.com/gorilla/handlers"
+	"github.com/gorilla/mux"
+	"github.com/prometheus/client_golang/prometheus"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/dexidp/dex/connector"
@@ -21,19 +25,17 @@ import (
 	"github.com/dexidp/dex/connector/bitbucketcloud"
 	"github.com/dexidp/dex/connector/github"
 	"github.com/dexidp/dex/connector/gitlab"
+	"github.com/dexidp/dex/connector/google"
 	"github.com/dexidp/dex/connector/keystone"
 	"github.com/dexidp/dex/connector/ldap"
 	"github.com/dexidp/dex/connector/linkedin"
 	"github.com/dexidp/dex/connector/microsoft"
 	"github.com/dexidp/dex/connector/mock"
 	"github.com/dexidp/dex/connector/oidc"
+	"github.com/dexidp/dex/connector/openshift"
 	"github.com/dexidp/dex/connector/saml"
 	"github.com/dexidp/dex/pkg/log"
 	"github.com/dexidp/dex/storage"
-	"github.com/felixge/httpsnoop"
-	"github.com/gorilla/handlers"
-	"github.com/gorilla/mux"
-	"github.com/prometheus/client_golang/prometheus"
 )
 
 // LocalConnector is the local passwordDB connector which is an internal
@@ -67,6 +69,9 @@ type Config struct {
 	// If enabled, the server won't prompt the user to approve authorization requests.
 	// Logging in implies approval.
 	SkipApprovalScreen bool
+
+	// If enabled, the connectors selection page will always be shown even if there's only one
+	AlwaysShowLoginScreen bool
 
 	RotateKeysAfter      time.Duration // Defaults to 6 hours.
 	IDTokensValidFor     time.Duration // Defaults to 24 hours
@@ -107,6 +112,9 @@ type WebConfig struct {
 
 	// Defaults to "coreos"
 	Theme string
+
+	// Map of extra values passed into the templates
+	Extra map[string]string
 }
 
 func value(val, defaultValue time.Duration) time.Duration {
@@ -133,6 +141,9 @@ type Server struct {
 
 	// If enabled, don't prompt user for approval after logging in through connector.
 	skipApproval bool
+
+	// If enabled, show the connector selection screen even if there's only one
+	alwaysShowLogin bool
 
 	supportedResponseTypes map[string]bool
 
@@ -181,6 +192,7 @@ func newServer(ctx context.Context, c Config, rotationStrategy rotationStrategy)
 		issuerURL: c.Issuer,
 		issuer:    c.Web.Issuer,
 		theme:     c.Web.Theme,
+		extra:     c.Web.Extra,
 	}
 
 	static, theme, tmpls, err := loadWebConfig(web)
@@ -201,6 +213,7 @@ func newServer(ctx context.Context, c Config, rotationStrategy rotationStrategy)
 		idTokensValidFor:       value(c.IDTokensValidFor, 24*time.Hour),
 		authRequestsValidFor:   value(c.AuthRequestsValidFor, 24*time.Hour),
 		skipApproval:           c.SkipApprovalScreen,
+		alwaysShowLogin:        c.AlwaysShowLoginScreen,
 		now:                    now,
 		templates:              tmpls,
 		logger:                 c.Logger,
@@ -300,6 +313,7 @@ func newServer(ctx context.Context, c Config, rotationStrategy rotationStrategy)
 	// TODO(ericchiang): rate limit certain paths based on IP.
 	handleWithCORS("/token", s.handleToken)
 	handleWithCORS("/keys", s.handlePublicKeys)
+	handleWithCORS("/userinfo", s.handleUserInfo)
 	handleWithCORS("/auth", s.handleAuthorization)
 	handleWithCORS("/auth/{connector}", s.handleConnectorLogin)
 	r.HandleFunc(path.Join(issuerURL.Path, "/callback"), func(w http.ResponseWriter, r *http.Request) {
@@ -455,7 +469,6 @@ func (s *Server) startGarbageCollection(ctx context.Context, frequency time.Dura
 			}
 		}
 	}()
-	return
 }
 
 // ConnectorConfig is a configuration that can open a connector.
@@ -472,12 +485,14 @@ var ConnectorsConfig = map[string]func() ConnectorConfig{
 	"ldap":            func() ConnectorConfig { return new(ldap.Config) },
 	"github":          func() ConnectorConfig { return new(github.Config) },
 	"gitlab":          func() ConnectorConfig { return new(gitlab.Config) },
+	"google":          func() ConnectorConfig { return new(google.Config) },
 	"oidc":            func() ConnectorConfig { return new(oidc.Config) },
 	"saml":            func() ConnectorConfig { return new(saml.Config) },
 	"authproxy":       func() ConnectorConfig { return new(authproxy.Config) },
 	"linkedin":        func() ConnectorConfig { return new(linkedin.Config) },
 	"microsoft":       func() ConnectorConfig { return new(microsoft.Config) },
 	"bitbucket-cloud": func() ConnectorConfig { return new(bitbucketcloud.Config) },
+	"openshift":       func() ConnectorConfig { return new(openshift.Config) },
 	// Keep around for backwards compatibility.
 	"samlExperimental": func() ConnectorConfig { return new(saml.Config) },
 }

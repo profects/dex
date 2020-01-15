@@ -43,6 +43,7 @@ Additional notes:
 * Kubernetes only trusts ID Tokens issued to a single client.
   * As a work around dex allows clients to [trust other clients][trusted-peers] to mint tokens on their behalf.
 * If a claim other than "email" is used for username, for example "sub", it will be prefixed by `"(value of --oidc-issuer-url)#"`. This is to namespace user controlled claims which may be used for privilege escalation.
+* The `/etc/ssl/certs/openid-ca.pem` used here is the CA from the [generated TLS assets](#generate-tls-assets), and is assumed to be present on the cluster nodes.
 
 ## Deploying dex on Kubernetes
 
@@ -154,6 +155,9 @@ Please note that the `example-app` will listen at http://127.0.0.1:5555 and can 
 Once the example app is running, choose the GitHub option and grant access to dex to view your profile.
 
 The default redirect uri is http://127.0.0.1:5555/callback and can be changed with the `--redirect-uri` flag and should correspond with your configmap.
+
+Please note the redirect uri is different from the one you filled when creating `GitHub OAuth2 client credentials`. 
+When you login, GitHub first redirects to dex (https://dex.example.com:32000/callback), then dex redirects to the redirect uri of exampl-app.
 
 The printed ID Token can then be used as a bearer token to authenticate against the API server.
 

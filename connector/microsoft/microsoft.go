@@ -15,43 +15,69 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/dexidp/dex/connector"
+	groups_pkg "github.com/dexidp/dex/pkg/groups"
 	"github.com/dexidp/dex/pkg/log"
 )
 
+// GroupNameFormat represents the format of the group identifier
+// we use type of string instead of int because it's easier to
+// marshall/unmarshall
+type GroupNameFormat string
+
+// Possible values for GroupNameFormat
 const (
-	apiURL = "https://graph.microsoft.com"
+	GroupID   GroupNameFormat = "id"
+	GroupName GroupNameFormat = "name"
+)
+
+const (
 	// Microsoft requires this scope to access user's profile
 	scopeUser = "user.read"
 	// Microsoft requires this scope to list groups the user is a member of
-	// and resolve their UUIDs to groups names.
+	// and resolve their ids to groups names.
 	scopeGroups = "directory.read.all"
 )
 
 // Config holds configuration options for microsoft logins.
 type Config struct {
-	ClientID           string   `json:"clientID"`
-	ClientSecret       string   `json:"clientSecret"`
-	RedirectURI        string   `json:"redirectURI"`
-	Tenant             string   `json:"tenant"`
-	OnlySecurityGroups bool     `json:"onlySecurityGroups"`
-	Groups             []string `json:"groups"`
+	ClientID             string          `json:"clientID"`
+	ClientSecret         string          `json:"clientSecret"`
+	RedirectURI          string          `json:"redirectURI"`
+	Tenant               string          `json:"tenant"`
+	OnlySecurityGroups   bool            `json:"onlySecurityGroups"`
+	Groups               []string        `json:"groups"`
+	GroupNameFormat      GroupNameFormat `json:"groupNameFormat"`
+	UseGroupsAsWhitelist bool            `json:"useGroupsAsWhitelist"`
 }
 
 // Open returns a strategy for logging in through Microsoft.
 func (c *Config) Open(id string, logger log.Logger) (connector.Connector, error) {
 	m := microsoftConnector{
-		redirectURI:        c.RedirectURI,
-		clientID:           c.ClientID,
-		clientSecret:       c.ClientSecret,
-		tenant:             c.Tenant,
-		onlySecurityGroups: c.OnlySecurityGroups,
-		groups:             c.Groups,
-		logger:             logger,
+		apiURL:               "https://login.microsoftonline.com",
+		graphURL:             "https://graph.microsoft.com",
+		redirectURI:          c.RedirectURI,
+		clientID:             c.ClientID,
+		clientSecret:         c.ClientSecret,
+		tenant:               c.Tenant,
+		onlySecurityGroups:   c.OnlySecurityGroups,
+		groups:               c.Groups,
+		groupNameFormat:      c.GroupNameFormat,
+		useGroupsAsWhitelist: c.UseGroupsAsWhitelist,
+		logger:               logger,
 	}
 	// By default allow logins from both personal and business/school
 	// accounts.
 	if m.tenant == "" {
 		m.tenant = "common"
+	}
+
+	// By default, use group names
+	switch m.groupNameFormat {
+	case "":
+		m.groupNameFormat = GroupName
+	case GroupID, GroupName:
+	default:
+		return nil, fmt.Errorf("invalid groupNameFormat: %s", m.groupNameFormat)
 	}
 
 	return &m, nil
@@ -69,13 +95,17 @@ var (
 )
 
 type microsoftConnector struct {
-	redirectURI        string
-	clientID           string
-	clientSecret       string
-	tenant             string
-	onlySecurityGroups bool
-	groups             []string
-	logger             log.Logger
+	apiURL               string
+	graphURL             string
+	redirectURI          string
+	clientID             string
+	clientSecret         string
+	tenant               string
+	onlySecurityGroups   bool
+	groupNameFormat      GroupNameFormat
+	groups               []string
+	useGroupsAsWhitelist bool
+	logger               log.Logger
 }
 
 func (c *microsoftConnector) isOrgTenant() bool {
@@ -98,8 +128,8 @@ func (c *microsoftConnector) oauth2Config(scopes connector.Scopes) *oauth2.Confi
 		ClientID:     c.clientID,
 		ClientSecret: c.clientSecret,
 		Endpoint: oauth2.Endpoint{
-			AuthURL:  "https://login.microsoftonline.com/" + c.tenant + "/oauth2/v2.0/authorize",
-			TokenURL: "https://login.microsoftonline.com/" + c.tenant + "/oauth2/v2.0/token",
+			AuthURL:  c.apiURL + "/" + c.tenant + "/oauth2/v2.0/authorize",
+			TokenURL: c.apiURL + "/" + c.tenant + "/oauth2/v2.0/token",
 		},
 		Scopes:      microsoftScopes,
 		RedirectURL: c.redirectURI,
@@ -271,7 +301,7 @@ type user struct {
 
 func (c *microsoftConnector) user(ctx context.Context, client *http.Client) (u user, err error) {
 	// https://developer.microsoft.com/en-us/graph/docs/api-reference/v1.0/api/user_get
-	req, err := http.NewRequest("GET", apiURL+"/v1.0/me?$select=id,displayName,userPrincipalName", nil)
+	req, err := http.NewRequest("GET", c.graphURL+"/v1.0/me?$select=id,displayName,userPrincipalName", nil)
 	if err != nil {
 		return u, fmt.Errorf("new req: %v", err)
 	}
@@ -301,37 +331,28 @@ type group struct {
 	Name string `json:"displayName"`
 }
 
-func (c *microsoftConnector) getGroups(ctx context.Context, client *http.Client, userID string) (groups []string, err error) {
-	ids, err := c.getGroupIDs(ctx, client)
+func (c *microsoftConnector) getGroups(ctx context.Context, client *http.Client, userID string) ([]string, error) {
+	userGroups, err := c.getGroupIDs(ctx, client)
 	if err != nil {
-		return groups, err
+		return nil, err
 	}
 
-	groups, err = c.getGroupNames(ctx, client, ids)
-	if err != nil {
-		return
+	if c.groupNameFormat == GroupName {
+		userGroups, err = c.getGroupNames(ctx, client, userGroups)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// ensure that the user is in at least one required group
-	isInGroups := false
-	if len(c.groups) > 0 {
-		gs := make(map[string]struct{})
-		for _, g := range c.groups {
-			gs[g] = struct{}{}
-		}
-
-		for _, g := range groups {
-			if _, ok := gs[g]; ok {
-				isInGroups = true
-				break
-			}
-		}
-	}
-	if len(c.groups) > 0 && !isInGroups {
-		return nil, fmt.Errorf("microsoft: user %v not in required groups", userID)
+	filteredGroups := groups_pkg.Filter(userGroups, c.groups)
+	if len(c.groups) > 0 && len(filteredGroups) == 0 {
+		return nil, fmt.Errorf("microsoft: user %v not in any of the required groups", userID)
+	} else if c.useGroupsAsWhitelist {
+		return filteredGroups, nil
 	}
 
-	return
+	return userGroups, nil
 }
 
 func (c *microsoftConnector) getGroupIDs(ctx context.Context, client *http.Client) (ids []string, err error) {
@@ -339,7 +360,7 @@ func (c *microsoftConnector) getGroupIDs(ctx context.Context, client *http.Clien
 	in := &struct {
 		SecurityEnabledOnly bool `json:"securityEnabledOnly"`
 	}{c.onlySecurityGroups}
-	reqURL := apiURL + "/v1.0/me/getMemberGroups"
+	reqURL := c.graphURL + "/v1.0/me/getMemberGroups"
 	for {
 		var out []string
 		var next string
@@ -367,7 +388,7 @@ func (c *microsoftConnector) getGroupNames(ctx context.Context, client *http.Cli
 		IDs   []string `json:"ids"`
 		Types []string `json:"types"`
 	}{ids, []string{"group"}}
-	reqURL := apiURL + "/v1.0/directoryObjects/getByIds"
+	reqURL := c.graphURL + "/v1.0/directoryObjects/getByIds"
 	for {
 		var out []group
 		var next string

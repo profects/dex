@@ -16,7 +16,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -118,6 +117,53 @@ func newTestServer(ctx context.Context, t *testing.T, updateConfig func(c *Confi
 	return s, server
 }
 
+func newTestServerMultipleConnectors(ctx context.Context, t *testing.T, updateConfig func(c *Config)) (*httptest.Server, *Server) {
+	var server *Server
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		server.ServeHTTP(w, r)
+	}))
+
+	config := Config{
+		Issuer:  s.URL,
+		Storage: memory.New(logger),
+		Web: WebConfig{
+			Dir: "../web",
+		},
+		Logger:             logger,
+		PrometheusRegistry: prometheus.NewRegistry(),
+	}
+	if updateConfig != nil {
+		updateConfig(&config)
+	}
+	s.URL = config.Issuer
+
+	connector := storage.Connector{
+		ID:              "mock",
+		Type:            "mockCallback",
+		Name:            "Mock",
+		ResourceVersion: "1",
+	}
+	connector2 := storage.Connector{
+		ID:              "mock2",
+		Type:            "mockCallback",
+		Name:            "Mock",
+		ResourceVersion: "1",
+	}
+	if err := config.Storage.CreateConnector(connector); err != nil {
+		t.Fatalf("create connector: %v", err)
+	}
+	if err := config.Storage.CreateConnector(connector2); err != nil {
+		t.Fatalf("create connector: %v", err)
+	}
+
+	var err error
+	if server, err = newServer(ctx, config, staticRotationStrategy(testKey)); err != nil {
+		t.Fatal(err)
+	}
+	server.skipApproval = true // Don't prompt for approval, just immediately redirect with code.
+	return s, server
+}
+
 func TestNewTestServer(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -148,6 +194,7 @@ func TestDiscovery(t *testing.T) {
 		"authorization_endpoint",
 		"token_endpoint",
 		"jwks_uri",
+		"userinfo_endpoint",
 	}
 	for _, field := range required {
 		if _, ok := got[field]; !ok {
@@ -197,6 +244,19 @@ func TestOAuth2CodeFlow(t *testing.T) {
 				}
 				if _, err := p.Verifier(oidcConfig).Verify(ctx, idToken); err != nil {
 					return fmt.Errorf("failed to verify id token: %v", err)
+				}
+				return nil
+			},
+		},
+		{
+			name: "fetch userinfo",
+			handleToken: func(ctx context.Context, p *oidc.Provider, config *oauth2.Config, token *oauth2.Token) error {
+				ui, err := p.UserInfo(ctx, config.TokenSource(ctx, token))
+				if err != nil {
+					return fmt.Errorf("failed to fetch userinfo: %v", err)
+				}
+				if conn.Identity.Email != ui.Email {
+					return fmt.Errorf("expected email to be %v, got %v", conn.Identity.Email, ui.Email)
 				}
 				return nil
 			},
@@ -492,7 +552,6 @@ func TestOAuth2CodeFlow(t *testing.T) {
 					t.Errorf("state did not match, want=%q got=%q", state, gotState)
 				}
 				w.WriteHeader(http.StatusOK)
-				return
 			}))
 
 			defer oauth2Client.Close()
@@ -531,6 +590,8 @@ func TestOAuth2CodeFlow(t *testing.T) {
 			if err != nil {
 				t.Fatalf("get failed: %v", err)
 			}
+			defer resp.Body.Close()
+
 			if reqDump, err = httputil.DumpRequest(resp.Request, false); err != nil {
 				t.Fatal(err)
 			}
@@ -539,23 +600,6 @@ func TestOAuth2CodeFlow(t *testing.T) {
 			}
 		}()
 	}
-}
-
-type nonceSource struct {
-	nonce string
-	once  sync.Once
-}
-
-func (n *nonceSource) ClaimNonce(nonce string) error {
-	if n.nonce != nonce {
-		return errors.New("invalid nonce")
-	}
-	ok := false
-	n.once.Do(func() { ok = true })
-	if !ok {
-		return errors.New("invalid nonce")
-	}
-	return nil
 }
 
 func TestOAuth2ImplicitFlow(t *testing.T) {
@@ -623,11 +667,8 @@ func TestOAuth2ImplicitFlow(t *testing.T) {
 		t.Fatalf("failed to create client: %v", err)
 	}
 
-	src := &nonceSource{nonce: nonce}
-
 	idTokenVerifier := p.Verifier(&oidc.Config{
-		ClientID:   client.ID,
-		ClaimNonce: src.ClaimNonce,
+		ClientID: client.ID,
 	})
 
 	oauth2Config = &oauth2.Config{
@@ -646,12 +687,16 @@ func TestOAuth2ImplicitFlow(t *testing.T) {
 		if err != nil {
 			return fmt.Errorf("failed to parse fragment: %v", err)
 		}
-		idToken := v.Get("id_token")
-		if idToken == "" {
+		rawIDToken := v.Get("id_token")
+		if rawIDToken == "" {
 			return errors.New("no id_token in fragment")
 		}
-		if _, err := idTokenVerifier.Verify(ctx, idToken); err != nil {
+		idToken, err := idTokenVerifier.Verify(ctx, rawIDToken)
+		if err != nil {
 			return fmt.Errorf("failed to verify id_token: %v", err)
+		}
+		if idToken.Nonce != nonce {
+			return fmt.Errorf("failed to verify id_token: nonce was %v, but want %v", idToken.Nonce, nonce)
 		}
 		return nil
 	}
@@ -683,6 +728,8 @@ func TestOAuth2ImplicitFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get failed: %v", err)
 	}
+	defer resp.Body.Close()
+
 	if reqDump, err = httputil.DumpRequest(resp.Request, false); err != nil {
 		t.Fatal(err)
 	}
@@ -756,7 +803,6 @@ func TestCrossClientScopes(t *testing.T) {
 				if !reflect.DeepEqual(idToken.Audience, expAudience) {
 					t.Errorf("expected audience %q, got %q", expAudience, idToken.Audience)
 				}
-
 			}
 			if gotState := q.Get("state"); gotState != state {
 				t.Errorf("state did not match, want=%q got=%q", state, gotState)
@@ -805,6 +851,8 @@ func TestCrossClientScopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get failed: %v", err)
 	}
+	defer resp.Body.Close()
+
 	if reqDump, err = httputil.DumpRequest(resp.Request, false); err != nil {
 		t.Fatal(err)
 	}
@@ -878,7 +926,6 @@ func TestCrossClientScopesWithAzpInAudienceByDefault(t *testing.T) {
 				if !reflect.DeepEqual(idToken.Audience, expAudience) {
 					t.Errorf("expected audience %q, got %q", expAudience, idToken.Audience)
 				}
-
 			}
 			if gotState := q.Get("state"); gotState != state {
 				t.Errorf("state did not match, want=%q got=%q", state, gotState)
@@ -926,6 +973,8 @@ func TestCrossClientScopesWithAzpInAudienceByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get failed: %v", err)
 	}
+	defer resp.Body.Close()
+
 	if reqDump, err = httputil.DumpRequest(resp.Request, false); err != nil {
 		t.Fatal(err)
 	}
@@ -1015,7 +1064,6 @@ func TestPasswordDB(t *testing.T) {
 			t.Errorf("%s: %s", tc.name, diff)
 		}
 	}
-
 }
 
 func TestPasswordDBUsernamePrompt(t *testing.T) {
@@ -1160,7 +1208,6 @@ func TestRefreshTokenFlow(t *testing.T) {
 			t.Errorf("state did not match, want=%q got=%q", state, gotState)
 		}
 		w.WriteHeader(http.StatusOK)
-		return
 	}))
 	defer oauth2Client.server.Close()
 
@@ -1183,9 +1230,11 @@ func TestRefreshTokenFlow(t *testing.T) {
 		RedirectURL:  redirectURL,
 	}
 
-	if _, err = http.Get(oauth2Client.server.URL + "/login"); err != nil {
+	resp, err := http.Get(oauth2Client.server.URL + "/login")
+	if err != nil {
 		t.Fatalf("get failed: %v", err)
 	}
+	defer resp.Body.Close()
 
 	tok := &oauth2.Token{
 		RefreshToken: oauth2Client.token.RefreshToken,
@@ -1193,13 +1242,14 @@ func TestRefreshTokenFlow(t *testing.T) {
 	}
 
 	// Login in again to receive a new token.
-	if _, err = http.Get(oauth2Client.server.URL + "/login"); err != nil {
+	resp, err = http.Get(oauth2Client.server.URL + "/login")
+	if err != nil {
 		t.Fatalf("get failed: %v", err)
 	}
+	defer resp.Body.Close()
 
 	// try to refresh expired token with old refresh token.
-	newToken, err := oauth2Client.config.TokenSource(ctx, tok).Token()
-	if newToken != nil {
-		t.Errorf("Token refreshed with invalid refresh token.")
+	if _, err := oauth2Client.config.TokenSource(ctx, tok).Token(); err == nil {
+		t.Errorf("Token refreshed with invalid refresh token, error expected.")
 	}
 }
