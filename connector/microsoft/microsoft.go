@@ -169,27 +169,26 @@ func (c *microsoftConnector) LoginURL(scopes connector.Scopes, callbackURL, stat
 
 	return c.oauth2Config(scopes).AuthCodeURL(state,
 		oauth2.SetAuthURLParam("response_type", "id_token code"),
-		oauth2.SetAuthURLParam("response_mode", "query"),
+		oauth2.SetAuthURLParam("response_mode", "form_post"),
 		oidc.Nonce(uuid.New().String()),
 	), nil
 }
 
 func (c *microsoftConnector) HandleCallback(s connector.Scopes, r *http.Request) (identity connector.Identity, err error) {
-	q := r.URL.Query()
-	if errType := q.Get("error"); errType != "" {
-		return identity, &oauth2Error{errType, q.Get("error_description")}
+	if errType := r.FormValue("error"); errType != "" {
+		return identity, &oauth2Error{errType, r.FormValue("error_description")}
 	}
 
 	oauth2Config := c.oauth2Config(s)
 
 	ctx := r.Context()
 
-	token, err := oauth2Config.Exchange(ctx, q.Get("code"))
+	token, err := oauth2Config.Exchange(ctx, r.FormValue("code"))
 	if err != nil {
 		return identity, fmt.Errorf("microsoft: failed to get token: %v", err)
 	}
 
-	idToken := q.Get("id_token")
+	idToken :=r.FormValue("id_token")
 	tenantID, err := c.getTenantID(ctx, idToken)
 	if err != nil {
 		return identity, fmt.Errorf("could not extract tenant id: %w", err)
