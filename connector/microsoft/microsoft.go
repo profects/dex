@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/coreos/go-oidc"
+	"github.com/google/uuid"
 	"io"
 	"net/http"
 	"sync"
@@ -153,6 +155,7 @@ func (c *microsoftConnector) oauth2Config(scopes connector.Scopes) *oauth2.Confi
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  c.apiURL + "/" + c.tenant + "/oauth2/v2.0/authorize",
 			TokenURL: c.apiURL + "/" + c.tenant + "/oauth2/v2.0/token",
+
 		},
 		Scopes:      microsoftScopes,
 		RedirectURL: c.redirectURI,
@@ -166,6 +169,7 @@ func (c *microsoftConnector) LoginURL(scopes connector.Scopes, callbackURL, stat
 
 	return c.oauth2Config(scopes).AuthCodeURL(state,
 		oauth2.SetAuthURLParam("response_type", "id_token code"),
+		oidc.Nonce(uuid.New().String()),
 	), nil
 }
 
