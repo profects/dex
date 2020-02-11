@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	"github.com/coreos/go-oidc"
 	"github.com/dexidp/dex/connector"
 	groups_pkg "github.com/dexidp/dex/pkg/groups"
 	"github.com/dexidp/dex/pkg/log"
@@ -36,7 +37,14 @@ const (
 	// Microsoft requires this scope to list groups the user is a member of
 	// and resolve their ids to groups names.
 	scopeGroups = "directory.read.all"
+
+	scopeOpenID        = "openid"
+	scopeOfflineAccess = "offline_access"
 )
+
+func createIssuerURL(tenant string) string {
+	return "https://login.microsoftonline.com/" + tenant + "/v2.0"
+}
 
 // Config holds configuration options for microsoft logins.
 type Config struct {
@@ -52,23 +60,36 @@ type Config struct {
 
 // Open returns a strategy for logging in through Microsoft.
 func (c *Config) Open(id string, logger log.Logger) (connector.Connector, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+
+	// By default allow logins from both personal and business/school
+	// accounts.
+	tenant := c.Tenant
+	if tenant == "" {
+		tenant = "common"
+	}
+
+	provider, err := oidc.NewProvider(ctx, createIssuerURL(tenant))
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("failed to get provider: %v", err)
+	}
+
 	m := microsoftConnector{
 		apiURL:               "https://login.microsoftonline.com",
 		graphURL:             "https://graph.microsoft.com",
 		redirectURI:          c.RedirectURI,
 		clientID:             c.ClientID,
 		clientSecret:         c.ClientSecret,
-		tenant:               c.Tenant,
+		tenant:               tenant,
 		onlySecurityGroups:   c.OnlySecurityGroups,
 		groups:               c.Groups,
 		groupNameFormat:      c.GroupNameFormat,
 		useGroupsAsWhitelist: c.UseGroupsAsWhitelist,
 		logger:               logger,
-	}
-	// By default allow logins from both personal and business/school
-	// accounts.
-	if m.tenant == "" {
-		m.tenant = "common"
+		verifier: provider.Verifier(
+			&oidc.Config{ClientID: c.ClientID},
+		),
 	}
 
 	// By default, use group names
@@ -86,6 +107,7 @@ func (c *Config) Open(id string, logger log.Logger) (connector.Connector, error)
 type connectorData struct {
 	AccessToken  string    `json:"accessToken"`
 	RefreshToken string    `json:"refreshToken"`
+	TenantID     string    `json:"tenantID"`
 	Expiry       time.Time `json:"expiry"`
 }
 
@@ -106,6 +128,7 @@ type microsoftConnector struct {
 	groups               []string
 	useGroupsAsWhitelist bool
 	logger               log.Logger
+	verifier             *oidc.IDTokenVerifier
 }
 
 func (c *microsoftConnector) isOrgTenant() bool {
@@ -117,12 +140,12 @@ func (c *microsoftConnector) groupsRequired(groupScope bool) bool {
 }
 
 func (c *microsoftConnector) oauth2Config(scopes connector.Scopes) *oauth2.Config {
-	microsoftScopes := []string{scopeUser}
+	microsoftScopes := []string{scopeUser, scopeOpenID}
 	if c.groupsRequired(scopes.Groups) {
 		microsoftScopes = append(microsoftScopes, scopeGroups)
 	}
 	if scopes.OfflineAccess {
-		microsoftScopes = append(microsoftScopes, "offline_access")
+		microsoftScopes = append(microsoftScopes, scopeOfflineAccess)
 	}
 	return &oauth2.Config{
 		ClientID:     c.clientID,
@@ -159,6 +182,12 @@ func (c *microsoftConnector) HandleCallback(s connector.Scopes, r *http.Request)
 		return identity, fmt.Errorf("microsoft: failed to get token: %v", err)
 	}
 
+	idToken := q.Get("id_token")
+	tenantID, err := c.getTenantID(ctx, idToken)
+	if err != nil {
+		return identity, errors.New("could not extract tenant ID")
+	}
+
 	client := oauth2Config.Client(ctx, token)
 
 	user, err := c.user(ctx, client)
@@ -186,6 +215,7 @@ func (c *microsoftConnector) HandleCallback(s connector.Scopes, r *http.Request)
 			AccessToken:  token.AccessToken,
 			RefreshToken: token.RefreshToken,
 			Expiry:       token.Expiry,
+			TenantID:     tenantID,
 		}
 		connData, err := json.Marshal(data)
 		if err != nil {
@@ -247,6 +277,7 @@ func (c *microsoftConnector) Refresh(ctx context.Context, s connector.Scopes, id
 				AccessToken:  tok.AccessToken,
 				RefreshToken: tok.RefreshToken,
 				Expiry:       tok.Expiry,
+				TenantID:     data.TenantID,
 			}
 			connData, err := json.Marshal(data)
 			if err != nil {
@@ -441,6 +472,19 @@ func (c *microsoftConnector) post(ctx context.Context, client *http.Client, reqU
 	}
 
 	return next, nil
+}
+
+func (c *microsoftConnector) getTenantID(ctx context.Context, jwtString string) (string, error) {
+	jwtTok, err := c.verifier.Verify(ctx, jwtString)
+	if err != nil {
+		return "", err
+	}
+
+	tidClaim := struct {
+		TenantID string `json:"tid"`
+	}{}
+	err = jwtTok.Claims(&tidClaim)
+	return tidClaim.TenantID, err
 }
 
 type graphError struct {
