@@ -168,7 +168,8 @@ func (c *microsoftConnector) LoginURL(scopes connector.Scopes, callbackURL, stat
 	}
 
 	return c.oauth2Config(scopes).AuthCodeURL(state,
-		oauth2.SetAuthURLParam("response_type", "id_token code"),
+		oauth2.SetAuthURLParam("response_type", "id_token+code"),
+		oauth2.SetAuthURLParam("response_mode", "query"),
 		oidc.Nonce(uuid.New().String()),
 	), nil
 }
