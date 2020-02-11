@@ -14,10 +14,10 @@ import (
 
 	"golang.org/x/oauth2"
 
-	"github.com/coreos/go-oidc"
 	"github.com/dexidp/dex/connector"
 	groups_pkg "github.com/dexidp/dex/pkg/groups"
 	"github.com/dexidp/dex/pkg/log"
+	"gopkg.in/square/go-jose.v2/jwt"
 )
 
 // GroupNameFormat represents the format of the group identifier
@@ -60,7 +60,7 @@ type Config struct {
 
 // Open returns a strategy for logging in through Microsoft.
 func (c *Config) Open(id string, logger log.Logger) (connector.Connector, error) {
-	ctx, cancel := context.WithCancel(context.Background())
+	//ctx, cancel := context.WithCancel(context.Background())
 
 	// By default allow logins from both personal and business/school
 	// accounts.
@@ -69,11 +69,11 @@ func (c *Config) Open(id string, logger log.Logger) (connector.Connector, error)
 		tenant = "common"
 	}
 
-	provider, err := oidc.NewProvider(ctx, createIssuerURL(tenant))
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("failed to get provider: %v", err)
-	}
+	//provider, err := oidc.NewProvider(ctx, createIssuerURL(tenant))
+	//if err != nil {
+	//	cancel()
+	//	return nil, fmt.Errorf("failed to get provider: %v", err)
+	//}
 
 	m := microsoftConnector{
 		apiURL:               "https://login.microsoftonline.com",
@@ -87,9 +87,9 @@ func (c *Config) Open(id string, logger log.Logger) (connector.Connector, error)
 		groupNameFormat:      c.GroupNameFormat,
 		useGroupsAsWhitelist: c.UseGroupsAsWhitelist,
 		logger:               logger,
-		verifier: provider.Verifier(
-			&oidc.Config{ClientID: c.ClientID},
-		),
+		//verifier: provider.Verifier(
+		//	&oidc.Config{ClientID: c.ClientID},
+		//),
 	}
 
 	// By default, use group names
@@ -128,7 +128,7 @@ type microsoftConnector struct {
 	groups               []string
 	useGroupsAsWhitelist bool
 	logger               log.Logger
-	verifier             *oidc.IDTokenVerifier
+	//verifier             *oidc.IDTokenVerifier
 }
 
 func (c *microsoftConnector) isOrgTenant() bool {
@@ -475,7 +475,7 @@ func (c *microsoftConnector) post(ctx context.Context, client *http.Client, reqU
 }
 
 func (c *microsoftConnector) getTenantID(ctx context.Context, jwtString string) (string, error) {
-	jwtTok, err := c.verifier.Verify(ctx, jwtString)
+	jwtTok, err := jwt.ParseSigned(jwtString)
 	if err != nil {
 		return "", err
 	}
@@ -483,7 +483,7 @@ func (c *microsoftConnector) getTenantID(ctx context.Context, jwtString string) 
 	tidClaim := struct {
 		TenantID string `json:"tid"`
 	}{}
-	err = jwtTok.Claims(&tidClaim)
+	err = jwtTok.UnsafeClaimsWithoutVerification(&tidClaim)
 	return tidClaim.TenantID, err
 }
 
