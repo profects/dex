@@ -164,7 +164,9 @@ func (c *microsoftConnector) LoginURL(scopes connector.Scopes, callbackURL, stat
 		return "", fmt.Errorf("expected callback URL %q did not match the URL in the config %q", callbackURL, c.redirectURI)
 	}
 
-	return c.oauth2Config(scopes).AuthCodeURL(state), nil
+	return c.oauth2Config(scopes).AuthCodeURL(state,
+		oauth2.SetAuthURLParam("response_type", "id_token code"),
+	), nil
 }
 
 func (c *microsoftConnector) HandleCallback(s connector.Scopes, r *http.Request) (identity connector.Identity, err error) {
@@ -185,7 +187,7 @@ func (c *microsoftConnector) HandleCallback(s connector.Scopes, r *http.Request)
 	idToken := q.Get("id_token")
 	tenantID, err := c.getTenantID(ctx, idToken)
 	if err != nil {
-		return identity, errors.New("could not extract tenant ID")
+		return identity, fmt.Errorf("could not extract tenant id: %w", err)
 	}
 
 	client := oauth2Config.Client(ctx, token)
