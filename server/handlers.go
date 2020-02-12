@@ -402,7 +402,11 @@ func (s *Server) handleConnectorCallback(w http.ResponseWriter, r *http.Request)
 			s.renderError(r, w, http.StatusBadRequest, "User session error.")
 			return
 		}
-	case http.MethodPost: // SAML POST binding
+	case http.MethodPost: // SAML POST binding or Microsoft form_post callback
+		if authID = r.PostFormValue("state"); authID != "" {
+			return
+		}
+
 		if authID = r.PostFormValue("RelayState"); authID == "" {
 			s.renderError(r, w, http.StatusBadRequest, "User session error.")
 			return
@@ -440,7 +444,7 @@ func (s *Server) handleConnectorCallback(w http.ResponseWriter, r *http.Request)
 	var identity connector.Identity
 	switch conn := conn.Connector.(type) {
 	case connector.CallbackConnector:
-		if r.Method != http.MethodGet {
+		if r.Method != http.MethodGet && r.FormValue("RelayState") != "" {
 			s.logger.Errorf("SAML request mapped to OAuth2 connector")
 			s.renderError(r, w, http.StatusBadRequest, "Invalid request")
 			return
@@ -558,8 +562,8 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch r.Method {
-	case http.MethodGet:
+	switch  {
+	case r.Method == http.MethodGet && r.FormValue("RelayState") == "" && r.FormValue("state") != "":
 		if s.skipApproval {
 			s.sendCodeResponse(w, r, authReq)
 			return
@@ -573,7 +577,7 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		if err := s.templates.approval(r, w, authReq.ID, authReq.Claims.Username, client.Name, authReq.Scopes, r.URL.Path); err != nil {
 			s.logger.Errorf("Server template error: %v", err)
 		}
-	case http.MethodPost:
+	case r.Method == http.MethodPost:
 		if r.FormValue("approval") != "approve" {
 			s.renderError(r, w, http.StatusInternalServerError, "Approval rejected.")
 			return
