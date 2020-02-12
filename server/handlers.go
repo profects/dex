@@ -313,8 +313,8 @@ func (s *Server) handleConnectorLogin(w http.ResponseWriter, r *http.Request) {
 	scopes := parseScopes(authReq.Scopes)
 	showBacklink := len(s.connectors) > 1
 
-	switch r.Method {
-	case http.MethodGet:
+	switch {
+	case r.Method == http.MethodGet || r.FormValue("RelayState") == "" && r.FormValue("state") != "":
 		switch conn := conn.Connector.(type) {
 		case connector.CallbackConnector:
 			// Use the auth request ID as the "state" token.
@@ -359,7 +359,7 @@ func (s *Server) handleConnectorLogin(w http.ResponseWriter, r *http.Request) {
 		default:
 			s.renderError(r, w, http.StatusBadRequest, "Requested resource does not exist.")
 		}
-	case http.MethodPost:
+	case r.Method == http.MethodPost:
 		passwordConnector, ok := conn.Connector.(connector.PasswordConnector)
 		if !ok {
 			s.renderError(r, w, http.StatusBadRequest, "Requested resource does not exist.")
@@ -403,8 +403,8 @@ func (s *Server) handleConnectorCallback(w http.ResponseWriter, r *http.Request)
 			return
 		}
 	case http.MethodPost: // SAML POST binding or Microsoft form_post callback
-		if authID = r.PostFormValue("state"); authID != "" {
-			return
+		if authID = r.PostFormValue("state"); authID != "" && r.PostFormValue("RelayState") == "" {
+			break
 		}
 
 		if authID = r.PostFormValue("RelayState"); authID == "" {
@@ -562,8 +562,8 @@ func (s *Server) handleApproval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch  {
-	case r.Method == http.MethodGet && r.FormValue("RelayState") == "" && r.FormValue("state") != "":
+	switch {
+	case r.Method == http.MethodGet || (r.FormValue("RelayState") == "" && r.FormValue("state") != ""):
 		if s.skipApproval {
 			s.sendCodeResponse(w, r, authReq)
 			return
