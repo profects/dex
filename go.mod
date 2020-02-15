@@ -1,6 +1,6 @@
 module github.com/dexidp/dex
 
-replace github.com/dexidp/dex => github.com/profects/dex v0.0.0-20191125091918-7becb0fb6e89
+replace github.com/dexidp/dex => github.com/profects/dex v0.0.0-20200215100028-1d6c618ee878
 
 require (
 	github.com/Microsoft/hcsshim v0.8.7 // indirect
@@ -23,7 +23,7 @@ require (
 	github.com/golang/protobuf v1.3.2
 	github.com/google/btree v1.0.0 // indirect
 	github.com/google/go-cmp v0.3.1 // indirect
-	github.com/google/uuid v1.1.1 // indirect
+	github.com/google/uuid v1.1.1
 	github.com/gorilla/handlers v1.4.2
 	github.com/gorilla/mux v1.7.3
 	github.com/gorilla/websocket v1.4.1 // indirect
