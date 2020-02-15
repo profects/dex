@@ -371,3 +371,14 @@ func (d dexAPI) RevokeRefresh(ctx context.Context, req *api.RevokeRefreshReq) (*
 
 	return &api.RevokeRefreshResp{}, nil
 }
+
+func (d dexAPI) GetConnectorData(ctx context.Context, req *api.ConnectorDataReq) (*api.ConnectorDataResp, error) {
+	sessions, err := d.s.GetOfflineSessions(req.UserId, req.ConnectorId)
+	if err != nil {
+		d.logger.Errorf("failed to get offline sessions: %v", err)
+		return nil, err
+	}
+	return &api.ConnectorDataResp{
+		ConnectorData: sessions.ConnectorData,
+	}, nil
+}
